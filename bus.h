@@ -1,0 +1,10 @@
+#pragma once
+
+#include <stdint.h>
+
+uint8_t init_rom(const uint8_t* romdata, uint32_t size);
+void loop_launcher();
+void loop_32kb();
+//void loop_hirom();
+uint8_t* selected_rom();
+void find_rom_entries();

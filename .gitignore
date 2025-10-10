@@ -1,0 +1,6 @@
+build
+hw
+logs
+roms
+*.gb
+*.log
