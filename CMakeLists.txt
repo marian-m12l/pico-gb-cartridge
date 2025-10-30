@@ -21,7 +21,7 @@ target_compile_definitions(pico-gb-cartridge PRIVATE
   PICO_DEFAULT_UART_TX_PIN=44
   PICO_DEFAULT_UART_RX_PIN=45
 
-  #ENABLE_UART=1
+  ENABLE_UART=1
 
   ENABLE_BUS=1
   #NO_LOAD=1
@@ -36,6 +36,6 @@ pico_set_program_version(pico-gb-cartridge "0.1")
 pico_enable_stdio_uart(pico-gb-cartridge 1)
 pico_enable_stdio_usb(pico-gb-cartridge 0)
 
-target_link_libraries(pico-gb-cartridge pico_stdlib hardware_xip_cache)
+target_link_libraries(pico-gb-cartridge pico_stdlib hardware_flash hardware_watchdog hardware_xip_cache)
 
 pico_add_extra_outputs(pico-gb-cartridge)

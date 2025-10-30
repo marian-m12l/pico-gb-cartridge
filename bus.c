@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
+#include "hardware/flash.h"
 #include "hardware/xip_cache.h"
 
 #include "bus.h"
@@ -36,13 +37,42 @@ uint8_t sram_banks[123][BANK_LENGTH];
 uint8_t* banks[MAX_BANKS_COUNT]; // 524288 bytes of rom data across 128 banks
 #endif
 
-uint32_t romsize;
+// FIXME Support larger ram (32 KiB) ?
+uint8_t ram[8192];
+
 uint8_t romtype;
+uint32_t romsize;
+uint32_t ramsize;
 
 roms_t my_roms;
 
 bool selecting_rom = false;
 uint8_t* selected_rom_addr;
+
+
+uint8_t* ram_persistent_flash_addr() {
+    return selected_rom_addr + 0x100000 - ramsize;
+}
+
+void persist_ram_to_flash() {
+    if (selected_rom_addr != 0 && ramsize > 0) {
+        uint32_t len = ramsize;
+        uint8_t* dest = ram_persistent_flash_addr();
+
+        printf("Persisting %d bytes of ram (0x%08x) to flash (0x%08x)\n", len, ram, dest);
+        uint32_t offset = ((uint32_t) dest) - XIP_BASE;
+        
+        printf("Erasing %p...%p\n", offset, offset + len);
+        flash_range_erase(offset, len);
+        
+        printf("Writing %p...%p from %p\n", offset, offset + len, ram);
+        flash_range_program(offset, ram, len);
+    }
+}
+
+uint8_t* selected_rom() {
+    return selected_rom_addr;
+}
 
 
 void pin_cache_lines() {
@@ -199,22 +229,52 @@ uint8_t init_rom(const uint8_t* romdata, uint32_t size) {
     uint8_t rom_size = romdata[0x148];
     uint8_t ram_size = romdata[0x149];
 
-    if (cart_type == 0 && rom_size == 0) {
-        romtype = 0;    // 0 == 32KiB bankless
+    if (cart_type == 0 && rom_size == 0) {  // 32KiB bankless
+        romtype = cart_type;
+    } else if (cart_type >= 1 && cart_type <= 3) {  // MBC1
+        romtype = cart_type;
     } else {
         romtype = 0xff; // Unsupported
     }
 
     // TODO Read ROM size from header ?!
     romsize = size;
+
+    ramsize = 0;
+    if (cart_type == 2 || cart_type == 3) {
+        if (ram_size < 2) {
+            ramsize = 0;
+        } else if (ram_size == 2) {
+            ramsize = 8 * 1024;
+        } else if (ram_size == 3) {
+            ramsize = 32 * 1024;
+        } else if (ram_size == 4) {
+            ramsize = 128 * 1024;
+        } else if (ram_size == 5) {
+            ramsize = 64 * 1024;
+        }
+    }
     
 #ifdef ENABLE_UART
     if (romtype == 0) { // 32KiB bankless
         printf("ROM type: 32KiB bankless\n");
+    } else if (romtype >= 1 && romtype <= 3) { // MBC1
+        printf("ROM type: MBC1\n");
     } else {
         printf("ROM type: Unsupported\n");
     }
 #endif
+
+    // Load ram from flash
+    if (selected_rom_addr != 0 && ramsize > 0) {
+        uint8_t* src = ram_persistent_flash_addr();
+        printf("Loading RAM from 0x%08x\n", src);
+        if (ramsize > sizeof(ram)) {
+            printf("Unsupported ram size: %d bytes (max. supported: %d bytes)\n", ramsize, sizeof(ram));
+        } else {
+            memcpy(ram, src, ramsize);
+        }
+    }
 
     return romtype;
 }
@@ -320,8 +380,93 @@ void __not_in_flash_func(loop_32kb)() {
     }
 }
 
-uint8_t* selected_rom() {
-    return selected_rom_addr;
+void __not_in_flash_func(loop_mbc1)() {
+    uint8_t rombank = 1;
+    uint8_t rambank = 0;
+    bool ram_enabled = false;
+
+#ifdef ENABLE_UART
+    printf("Waiting for GB to boot...\n");
+#endif
+
+    while((gpio_get_all64() & GB_RD_PIN_MASK) == 0) {
+        tight_loop_contents();
+    }
+
+    while (true) {
+        while((gpio_get_all64() & GB_CTRL_PINS_MASK) == GB_CTRL_PINS_MASK) {
+             tight_loop_contents();
+        }
+        bool writing = (gpio_get_all64() & GB_WR_PIN_MASK) == 0;
+        uint32_t address = (gpio_get_all64() & GB_ADDR_PINS_MASK);
+        if (writing) {
+            // READ from data pins
+            gpio_set_dir_in_masked64(GB_DATA_PINS_MASK);
+            gpio_clr_mask64(GB_DATA_PINS_MASK);
+            uint8_t data = (gpio_get_all64() & GB_DATA_PINS_MASK) >> GB_DATA_PINS_SHIFT;
+            // Registers: 0x0000-0x1fff to set enable/disable ram
+            if (address <= 0x1fff) {
+                ram_enabled = (data & 0xf) == 0xa;
+            }
+            // Registers: 0x2000-0x3fff to set rom bank
+            else if (address <= 0x3fff) {
+                rombank = (data == 0) ? 1 : (data & 0x1f);  // TODO remove unused bits for small roms ?
+            }
+            // Registers: 0x4000-0x5fff to set ram bank
+            else if (address <= 0x5fff) {
+                rambank = data & 0x03;
+            }
+            // Write to ram
+            else if (ram_enabled && address >= 0xa000 && address <= 0xbfff) {
+                uint32_t data_location_in_ram = rambank * 8192 + (address & 0x1fff);
+                if (data_location_in_ram < ramsize) {
+                    ram[data_location_in_ram] = data;
+                }
+            }
+            continue;
+        }
+        uint8_t data = 0xff;
+        // Read from rom
+        if ((address & 0x8000) == 0 && address < romsize) {
+            uint32_t data_location_in_rom;
+            if ((address & 0xc000) == 0) {
+                // 0x0000-0x3fff: Bank 0
+                data_location_in_rom = address;
+            } else {
+                // 0x4000-0x7fff: Current bank
+                data_location_in_rom = rombank * 16384 + (address & 0x3fff);
+            }
+#ifdef NO_LOAD
+            data = rom[data_location_in_rom];
+#endif
+#ifdef LOAD_NO_BANKS
+            data = sram_rom[data_location_in_rom];
+#endif
+#ifdef LOAD_BANKS_16K
+            int bank = (data_location_in_rom >> 14) & 0x1f;
+            int addr = data_location_in_rom & 0x3fff;
+            data = banks[bank][addr];
+#endif
+#ifdef LOAD_BANKS_4K
+            int bank = (data_location_in_rom >> 12) & 0x7f;
+            int addr = data_location_in_rom & 0x0fff;
+            data = banks[bank][addr];
+#endif
+        }
+        // Read from ram
+        else if (ram_enabled && address >= 0xa000 && address <= 0xbfff) {
+            uint32_t data_location_in_ram = rambank * 8192 + (address & 0x1fff);
+            if (data_location_in_ram < ramsize) {
+                data = ram[data_location_in_ram];
+            }
+        }
+        uint64_t data_out = data << GB_DATA_PINS_SHIFT;
+        gpio_set_dir_out_masked64(GB_DATA_PINS_MASK);
+        gpio_put_masked64(GB_DATA_PINS_MASK, data_out);
+        // FIXME when to set back to input ??
+        //gpio_set_dir_in_masked64(GB_DATA_PINS_MASK);
+        //gpio_clr_mask64(GB_DATA_PINS_MASK);
+    }
 }
 
 const char* magic = "pico-gb-rom     ";

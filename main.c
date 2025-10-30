@@ -2,10 +2,39 @@
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
 #include "hardware/vreg.h"
+#include "hardware/watchdog.h"
 
 #include "bus.h"
 #include "pins.h"
 #include "launcher.h"
+
+
+void button_gpio_callback(uint gpio, uint32_t events) {
+    // Called when BUTTON is pressed (low)
+    // Wait for BUTTON to be released (high) or for the long-press reset-to-launcher timeout
+    uint32_t counter = 1000000;
+    while (--counter && !gpio_get(BUTTON_PIN)) {
+        tight_loop_contents();
+    }
+
+    // Persist ram to flash, if needed
+    persist_ram_to_flash();
+
+    if (counter == 0) {
+        // Just reset RP2350 (into launcher)
+        watchdog_reboot(0, 0, 0);
+    } else {
+        // Hold console in reset
+        gpio_put(GB_RESET_PIN, 0);
+        gpio_set_drive_strength(GB_RESET_PIN, GPIO_DRIVE_STRENGTH_12MA);
+        gpio_set_dir(GB_RESET_PIN, true);
+
+        sleep_ms(500);
+
+        // Release reset on console
+        gpio_set_dir(GB_RESET_PIN, false);
+    }
+}
 
 
 int main() {
@@ -43,6 +72,13 @@ int main() {
     // Look for ROMs in flash memory
     find_rom_entries();
 
+    // Register BUTTON interrupt handler
+    gpio_init(BUTTON_PIN);
+    gpio_pull_up(BUTTON_PIN);
+    gpio_set_irq_callback(&button_gpio_callback);
+    irq_set_enabled(IO_IRQ_BANK0, true);
+    gpio_set_irq_enabled(BUTTON_PIN, GPIO_IRQ_EDGE_FALL, true);
+
     // Load menu and loop
     init_rom(launcher_rom, launcher_rom_size);
 
@@ -65,8 +101,8 @@ int main() {
 
         if (romtype == 0) { // 32KiB bankless ROM
             loop_32kb();
-        } else if (romtype == 1) {  // TODO Banking ? MBCx ? SRAM ? ...
-            //loop_hirom();
+        } else if (romtype >= 1 && romtype <= 3) {  // MBC1
+            loop_mbc1();
         }
     }
 #endif

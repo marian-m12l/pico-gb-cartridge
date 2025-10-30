@@ -14,6 +14,8 @@ On rp2350 board (e.g. PGA2350):
 - Clock pin `CLK`: GPIO 28
 - Audio pin `AUDIO`: GPIO 29
 
+- On-board button (active low) to persist sram / reset game or to launcher: GPIO 30
+
 - UART pins `TX` and `RX`: GPIO 44 and 45
 
 ## Build instructions
