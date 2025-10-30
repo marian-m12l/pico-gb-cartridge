@@ -1,5 +1,13 @@
 # RP2350-based Game Boy cartridge
 
+![launcher](https://github.com/user-attachments/assets/f570e777-22eb-4787-b23b-830a3acacbd1)
+
+![ingame](https://github.com/user-attachments/assets/6fe78c4f-f3ac-4561-988c-c138041f281f)
+
+https://github.com/user-attachments/assets/1f53fd3e-0f1c-4872-a420-8dec0f6acc66
+
+![gb_cart_1](https://github.com/user-attachments/assets/d729a48d-4ac1-476d-beb8-cb5565ad9255)
+
 
 ## Pins
 
