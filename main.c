@@ -1,13 +1,14 @@
-#include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
 #include "hardware/vreg.h"
 #include "hardware/watchdog.h"
 
+#include "debug.h"
 #include "bus.h"
 #include "pins.h"
 #include "launcher.h"
 
+#define MAGIC_RESET_TO_ROM 0x11111111
 
 void button_gpio_callback(uint gpio, uint32_t events) {
     // Called when BUTTON is pressed (low)
@@ -20,19 +21,18 @@ void button_gpio_callback(uint gpio, uint32_t events) {
     // Persist ram to flash, if needed
     persist_ram_to_flash();
 
-    if (counter == 0) {
+    if (counter == 0 || selected_rom() == 0) {
         // Just reset RP2350 (into launcher)
+        DEBUGF("Resetting to launcher\n");
+        watchdog_hw->scratch[0] = 0;
+        watchdog_hw->scratch[1] = 0;
         watchdog_reboot(0, 0, 0);
     } else {
-        // Hold console in reset
-        gpio_put(GB_RESET_PIN, 0);
-        gpio_set_drive_strength(GB_RESET_PIN, GPIO_DRIVE_STRENGTH_12MA);
-        gpio_set_dir(GB_RESET_PIN, true);
-
-        sleep_ms(500);
-
-        // Release reset on console
-        gpio_set_dir(GB_RESET_PIN, false);
+        // Reset RP2350 but keep selected rom
+        DEBUGF("Resetting to rom\n");
+        watchdog_hw->scratch[0] = MAGIC_RESET_TO_ROM;
+        watchdog_hw->scratch[1] = (int) selected_rom();
+        watchdog_reboot(0, 0, 0);
     }
 }
 
@@ -79,16 +79,26 @@ int main() {
     irq_set_enabled(IO_IRQ_BANK0, true);
     gpio_set_irq_enabled(BUTTON_PIN, GPIO_IRQ_EDGE_FALL, true);
 
-    // Load menu and loop
-    init_rom(launcher_rom, launcher_rom_size);
+    uint8_t* selected;
+    if (watchdog_hw->scratch[0] == MAGIC_RESET_TO_ROM) {
+        selected = (uint8_t*) watchdog_hw->scratch[1];
+        set_selected_rom(selected);
+        DEBUGF("Booting to rom 0x%p\n", selected);
+    } else {
+        DEBUGF("Booting to launcher\n");
 
-    // Release reset on console
-    gpio_set_dir(GB_RESET_PIN, false);
+        // Load menu and loop
+        init_rom(launcher_rom, launcher_rom_size);
 
-    loop_launcher();
+        // Release reset on console
+        gpio_set_dir(GB_RESET_PIN, false);
 
-    // Rom was selected, load and run loop
-    uint8_t* selected = selected_rom();
+        loop_launcher();
+
+        // Rom was selected, load and run loop
+        selected = selected_rom();
+    }
+
     if (selected != 0) {
         // Hold console in reset until rom is loaded and loop is started
         gpio_set_dir(GB_RESET_PIN, true);
@@ -98,6 +108,8 @@ int main() {
         
         // Release reset on console
         gpio_set_dir(GB_RESET_PIN, false);
+
+        // FIXME Stop loop if console is turned off ? --> 5v from cartridge header ? rst ?        
         
         cart.loop();
     }

@@ -16,6 +16,7 @@ typedef struct {
 
 void persist_ram_to_flash();
 uint8_t* selected_rom();
+void set_selected_rom(uint8_t* selected);
 cart_t init_rom(const uint8_t* romdata, uint32_t size);
 void loop_launcher();
 void loop_32kb();

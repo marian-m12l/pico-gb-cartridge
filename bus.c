@@ -1,9 +1,9 @@
-#include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/flash.h"
 #include "hardware/xip_cache.h"
 
+#include "debug.h"
 #include "bus.h"
 #include "pins.h"
 #include "launcher.h"
@@ -13,9 +13,18 @@
 
 #define CACHE_AS_SRAM_OFFSET 0x02000000
 
+#ifdef NO_LOAD
+#define SET_DATA(data_location_in_rom) { \
+    data = rom[data_location_in_rom]; \
+}
+#endif
+
 #ifdef LOAD_NO_BANKS
 #define ROM_MAX_LENGTH (256*1024)
 uint8_t sram_rom[ROM_MAX_LENGTH];
+#define SET_DATA(data_location_in_rom) { \
+    data = sram_rom[data_location_in_rom]; \
+}
 #endif
 
 #ifdef LOAD_BANKS_16K
@@ -25,6 +34,11 @@ uint8_t sram_rom[ROM_MAX_LENGTH];
 uint8_t* xip_bank31 = (uint8_t*) (XIP_BASE+CACHE_AS_SRAM_OFFSET);
 uint8_t sram_banks[31][BANK_LENGTH];
 uint8_t* banks[MAX_BANKS_COUNT]; // 524288 bytes of rom data across 32 banks
+#define SET_DATA(data_location_in_rom) { \
+    int bank = (data_location_in_rom >> 14) & 0x1f; \
+    int addr = data_location_in_rom & 0x3fff; \
+    data = banks[bank][addr]; \
+}
 #endif
 
 #ifdef LOAD_BANKS_4K
@@ -35,6 +49,11 @@ uint8_t* xip_banks = (uint8_t*) (XIP_BASE+CACHE_AS_SRAM_OFFSET);
 uint8_t* usb_bank = (uint8_t*) (USBCTRL_DPRAM_BASE);
 uint8_t sram_banks[123][BANK_LENGTH];
 uint8_t* banks[MAX_BANKS_COUNT]; // 524288 bytes of rom data across 128 banks
+#define SET_DATA(data_location_in_rom) { \
+    int bank = (data_location_in_rom >> 12) & 0x7f; \
+    int addr = data_location_in_rom & 0x0fff; \
+    data = banks[bank][addr]; \
+}
 #endif
 
 // FIXME Support larger ram (32 KiB) ?
@@ -57,13 +76,13 @@ void persist_ram_to_flash() {
         uint32_t len = cart.ramsize;
         uint8_t* dest = ram_persistent_flash_addr();
 
-        printf("Persisting %d bytes of ram (0x%08x) to flash (0x%08x)\n", len, ram, dest);
+        DEBUGF("Persisting %d bytes of ram (0x%08x) to flash (0x%08x)\n", len, ram, dest);
         uint32_t offset = ((uint32_t) dest) - XIP_BASE;
         
-        printf("Erasing %p...%p\n", offset, offset + len);
+        DEBUGF("Erasing %p...%p\n", offset, offset + len);
         flash_range_erase(offset, len);
         
-        printf("Writing %p...%p from %p\n", offset, offset + len, ram);
+        DEBUGF("Writing %p...%p from %p\n", offset, offset + len, ram);
         flash_range_program(offset, ram, len);
     }
 }
@@ -72,35 +91,29 @@ uint8_t* selected_rom() {
     return selected_rom_addr;
 }
 
+void set_selected_rom(uint8_t* selected) {
+    selected_rom_addr = selected;
+}
+
 
 void pin_cache_lines() {
-#ifdef ENABLE_UART
-    printf("Pinning 16K of cache lines\n");
-#endif
+    DEBUGF("Pinning 16K of cache lines\n");
     // Pin cache lines for an additional 16 KiB of RAM
     xip_cache_pin_range(CACHE_AS_SRAM_OFFSET, 16*1024);
-#ifdef ENABLE_UART
-    printf("Pinned\n");
-#endif
+    DEBUGF("Pinned\n");
 }
 
 #ifdef LOAD_NO_BANKS
 void load_no_banks(const uint8_t* romdata, uint32_t size) {
     if (size > ROM_MAX_LENGTH) {
-#ifdef ENABLE_UART
-        printf("Unsupported ROM size: %d > %d\n", size, ROM_MAX_LENGTH);
-#endif
+        DEBUGF("Unsupported ROM size: %d > %d\n", size, ROM_MAX_LENGTH);
         size = ROM_MAX_LENGTH;
     }
-#ifdef ENABLE_UART
-    printf("Loading %d bytes ROM\n", size);
-#endif
+    DEBUGF("Loading %d bytes ROM\n", size);
     memcpy(sram_rom, romdata, size);
     // Verify ROM
     if (memcmp(sram_rom, romdata, size) != 0) {
-#ifdef ENABLE_UART
-        printf("ROM mismatch\n");
-#endif
+        DEBUGF("ROM mismatch\n");
     }
 }
 #endif
@@ -115,32 +128,22 @@ void load_banks_16k(const uint8_t* romdata, uint32_t size) {
     memset(xip_bank31, 0, BANK_LENGTH);
     // Load ROM into RAM
     int banks_count = size / BANK_LENGTH;
-#ifdef ENABLE_UART
-    printf("ROM size: %d Banks count: %d\n", size, banks_count);
-#endif
+    DEBUGF("ROM size: %d Banks count: %d\n", size, banks_count);
     if (banks_count > MAX_BANKS_COUNT) {
-#ifdef ENABLE_UART
-        printf("Unsupported ROM size: %d banks > %d\n", banks_count, MAX_BANKS_COUNT);
-#endif
+        DEBUGF("Unsupported ROM size: %d banks > %d\n", banks_count, MAX_BANKS_COUNT);
         banks_count = MAX_BANKS_COUNT;
     }
-#ifdef ENABLE_UART
-    printf("Loading %d ROM banks\n", banks_count);
-#endif
+    DEBUGF("Loading %d ROM banks\n", banks_count);
     for (int i=0; i<banks_count; i++) {
         memcpy(banks[i], romdata + i*BANK_LENGTH, BANK_LENGTH);
     }
     // Verify ROM
     for (int i=0; i<banks_count; i++) {
         if (memcmp(banks[i], romdata + i*BANK_LENGTH, BANK_LENGTH) != 0) {
-#ifdef ENABLE_UART
-            printf("ROM bank mismatch: %d\n", i);
-#endif
+            DEBUGF("ROM bank mismatch: %d\n", i);
         }
     }
-#ifdef ENABLE_UART
-    printf("ROM banks verified\n");
-#endif
+    DEBUGF("ROM banks verified\n");
 }
 #endif
 
@@ -159,43 +162,22 @@ void load_banks_4k(const uint8_t* romdata, uint32_t size) {
     memset(usb_bank, 0, BANK_LENGTH);
     // Load ROM into RAM
     int banks_count = size / BANK_LENGTH;
-#ifdef ENABLE_UART
-    printf("ROM size: %d Banks count: %d\n", size, banks_count);
-#endif
+    DEBUGF("ROM size: %d Banks count: %d\n", size, banks_count);
     if (banks_count > MAX_BANKS_COUNT) {
-#ifdef ENABLE_UART
-        printf("Unsupported ROM size: %d banks > %d\n", banks_count, MAX_BANKS_COUNT);
-#endif
+        DEBUGF("Unsupported ROM size: %d banks > %d\n", banks_count, MAX_BANKS_COUNT);
         banks_count = MAX_BANKS_COUNT;
     }
-#ifdef ENABLE_UART
-    printf("Loading %d ROM banks\n", banks_count);
-#endif
+    DEBUGF("Loading %d ROM banks\n", banks_count);
     for (int i=0; i<banks_count; i++) {
         memcpy(banks[i], romdata + i*BANK_LENGTH, BANK_LENGTH);
     }
     // Verify ROM
     for (int i=0; i<banks_count; i++) {
         if (memcmp(banks[i], romdata + i*BANK_LENGTH, BANK_LENGTH) != 0) {
-#ifdef ENABLE_UART
-            printf("ROM bank mismatch: %d\n", i);
-#endif
+            DEBUGF("ROM bank mismatch: %d\n", i);
         }
     }
-#ifdef ENABLE_UART
-    printf("ROM banks verified\n");
-#endif
-
-    // Output some data from ram banks
-#ifdef ENABLE_UART
-    for (int i=0; i<banks_count; i++) {
-        printf("Bank 0x%02x @ 0x%08x: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                    i, banks[i],
-                    banks[i][0], banks[i][1], banks[i][2], banks[i][3], banks[i][4], banks[i][5], banks[i][6], banks[i][7],
-                    banks[i][8], banks[i][9], banks[i][10], banks[i][11], banks[i][12], banks[i][13], banks[i][14], banks[i][15]
-        );
-    }
-#endif
+    DEBUGF("ROM banks verified\n");
 }
 #endif
 
@@ -218,9 +200,7 @@ cart_t init_rom(const uint8_t* romdata, uint32_t size) {
     load_banks_4k(romdata, size);
 #endif
 
-#ifdef ENABLE_UART
-    printf("Loaded ROM at 0x%p\n", romdata);
-#endif
+    DEBUGF("Loaded ROM at 0x%p\n", romdata);
 
     memset(&cart, 0, sizeof(cart));
 
@@ -257,31 +237,23 @@ cart_t init_rom(const uint8_t* romdata, uint32_t size) {
     
     if (cart.type == 0) { // 32KiB bankless
         cart.loop = &loop_32kb;
-#ifdef ENABLE_UART
-        printf("ROM type: 32KiB bankless\n");
-#endif
+        DEBUGF("ROM type: 32KiB bankless\n");
     } else if (cart.type >= 0x01 && cart.type <= 0x03) { // MBC1
         cart.loop = &loop_mbc1;
-#ifdef ENABLE_UART
-        printf("ROM type: MBC1\n");
-#endif
+        DEBUGF("ROM type: MBC1\n");
     } else if (cart.type >= 0x19 && cart.type <= 0x1e) { // MBC5
         cart.loop = &loop_mbc5;
-#ifdef ENABLE_UART
-        printf("ROM type: MBC5\n");
-#endif
+        DEBUGF("ROM type: MBC5\n");
     } else {
-#ifdef ENABLE_UART
-        printf("ROM type: Unsupported\n");
-#endif
+        DEBUGF("ROM type: Unsupported\n");
     }
 
     // Load ram from flash
     if (selected_rom_addr != 0 && cart.ramsize > 0) {
         uint8_t* src = ram_persistent_flash_addr();
-        printf("Loading RAM from 0x%08x\n", src);
+        DEBUGF("Loading RAM from 0x%08x\n", src);
         if (cart.ramsize > sizeof(ram)) {
-            printf("Unsupported ram size: %d bytes (max. supported: %d bytes)\n", cart.ramsize, sizeof(ram));
+            DEBUGF("Unsupported ram size: %d bytes (max. supported: %d bytes)\n", cart.ramsize, sizeof(ram));
         } else {
             memcpy(ram, src, cart.ramsize);
         }
@@ -291,9 +263,7 @@ cart_t init_rom(const uint8_t* romdata, uint32_t size) {
 }
 
 void __not_in_flash_func(loop_launcher)() {
-#ifdef ENABLE_UART
-    printf("Waiting for GB to boot...\n");
-#endif
+    DEBUGF("Waiting for GB to boot...\n");
 
     while((gpio_get_all64() & GB_RD_PIN_MASK) == 0) {
         tight_loop_contents();
@@ -307,22 +277,7 @@ void __not_in_flash_func(loop_launcher)() {
         uint8_t data = 0xff;
         if ((address & 0x8000) == 0 && address < cart.romsize) {
             uint32_t data_location_in_rom = address;
-#ifdef NO_LOAD
-            data = launcher_rom[data_location_in_rom];
-#endif
-#ifdef LOAD_NO_BANKS
-            data = sram_rom[data_location_in_rom];
-#endif
-#ifdef LOAD_BANKS_16K
-            int bank = (data_location_in_rom >> 14) & 0x1f;
-            int addr = data_location_in_rom & 0x3fff;
-            data = banks[bank][addr];
-#endif
-#ifdef LOAD_BANKS_4K
-            int bank = (data_location_in_rom >> 12) & 0x7f;
-            int addr = data_location_in_rom & 0x0fff;
-            data = banks[bank][addr];
-#endif
+            SET_DATA(data_location_in_rom);
         } else if (address >= 0xb000 && address < 0xb400) {
             // Rom entries
             uint16_t offset = address - 0xb000;
@@ -349,9 +304,7 @@ void __not_in_flash_func(loop_launcher)() {
 }
 
 void __not_in_flash_func(loop_32kb)() {
-#ifdef ENABLE_UART
-    printf("Waiting for GB to boot...\n");
-#endif
+    DEBUGF("Waiting for GB to boot...\n");
 
     while((gpio_get_all64() & GB_RD_PIN_MASK) == 0) {
         tight_loop_contents();
@@ -365,22 +318,7 @@ void __not_in_flash_func(loop_32kb)() {
         uint8_t data = 0xff;
         if ((address & 0x8000) == 0 && address < cart.romsize) {
             uint32_t data_location_in_rom = address;
-#ifdef NO_LOAD
-            data = rom[data_location_in_rom];
-#endif
-#ifdef LOAD_NO_BANKS
-            data = sram_rom[data_location_in_rom];
-#endif
-#ifdef LOAD_BANKS_16K
-            int bank = (data_location_in_rom >> 14) & 0x1f;
-            int addr = data_location_in_rom & 0x3fff;
-            data = banks[bank][addr];
-#endif
-#ifdef LOAD_BANKS_4K
-            int bank = (data_location_in_rom >> 12) & 0x7f;
-            int addr = data_location_in_rom & 0x0fff;
-            data = banks[bank][addr];
-#endif
+            SET_DATA(data_location_in_rom);
         }
         uint64_t data_out = data << GB_DATA_PINS_SHIFT;
         gpio_set_dir_out_masked64(GB_DATA_PINS_MASK);
@@ -396,9 +334,7 @@ void __not_in_flash_func(loop_mbc1)() {
     uint8_t rambank = 0;
     bool ram_enabled = false;
 
-#ifdef ENABLE_UART
-    printf("Waiting for GB to boot...\n");
-#endif
+    DEBUGF("Waiting for GB to boot...\n");
 
     while((gpio_get_all64() & GB_RD_PIN_MASK) == 0) {
         tight_loop_contents();
@@ -447,22 +383,7 @@ void __not_in_flash_func(loop_mbc1)() {
                 // 0x4000-0x7fff: Current bank
                 data_location_in_rom = rombank * 16384 + (address & 0x3fff);
             }
-#ifdef NO_LOAD
-            data = rom[data_location_in_rom];
-#endif
-#ifdef LOAD_NO_BANKS
-            data = sram_rom[data_location_in_rom];
-#endif
-#ifdef LOAD_BANKS_16K
-            int bank = (data_location_in_rom >> 14) & 0x1f;
-            int addr = data_location_in_rom & 0x3fff;
-            data = banks[bank][addr];
-#endif
-#ifdef LOAD_BANKS_4K
-            int bank = (data_location_in_rom >> 12) & 0x7f;
-            int addr = data_location_in_rom & 0x0fff;
-            data = banks[bank][addr];
-#endif
+            SET_DATA(data_location_in_rom);
         }
         // Read from ram
         else if (ram_enabled && address >= 0xa000 && address <= 0xbfff) {
@@ -485,9 +406,7 @@ void __not_in_flash_func(loop_mbc5)() {
     uint8_t rambank = 0;
     bool ram_enabled = false;
 
-#ifdef ENABLE_UART
-    printf("Waiting for GB to boot...\n");
-#endif
+    DEBUGF("Waiting for GB to boot...\n");
 
     while((gpio_get_all64() & GB_RD_PIN_MASK) == 0) {
         tight_loop_contents();
@@ -545,22 +464,7 @@ void __not_in_flash_func(loop_mbc5)() {
                 // 0x4000-0x7fff: Current bank
                 data_location_in_rom = rombank * 16384 + (address & 0x3fff);
             }
-#ifdef NO_LOAD
-            data = rom[data_location_in_rom];
-#endif
-#ifdef LOAD_NO_BANKS
-            data = sram_rom[data_location_in_rom];
-#endif
-#ifdef LOAD_BANKS_16K
-            int bank = (data_location_in_rom >> 14) & 0x1f;
-            int addr = data_location_in_rom & 0x3fff;
-            data = banks[bank][addr];
-#endif
-#ifdef LOAD_BANKS_4K
-            int bank = (data_location_in_rom >> 12) & 0x7f;
-            int addr = data_location_in_rom & 0x0fff;
-            data = banks[bank][addr];
-#endif
+            SET_DATA(data_location_in_rom);
         }
         // Read from ram
         else if (ram_enabled && address >= 0xa000 && address <= 0xbfff) {
@@ -592,21 +496,21 @@ uint16_t bsd_checksum(uint8_t* addr, uint32_t size) {
     return checksum;
 }
 void find_rom_entries() {
-    printf("find_rom_entries\n");
+    DEBUGF("find_rom_entries\n");
     int romIndex = 0;
     for (int i=1; i<16; i++) {
         uint8_t* addr = (uint8_t*) 0x10000000 + i * 0x100000;
-        printf("addr=0x%08x\n", addr);
+        DEBUGF("addr=0x%08x\n", addr);
         if (memcmp(addr, magic, 16) == 0) {
             // Found magic bytes
-            printf("found magic\n");
+            DEBUGF("found magic\n");
             uint32_t size = *((uint32_t*) (addr + 16));
-            printf("size=%d\n", size);
+            DEBUGF("size=%d\n", size);
             uint16_t checksum = *((uint16_t*) (addr + 30));
-            printf("checksum=0x%04x\n", checksum);
+            DEBUGF("checksum=0x%04x\n", checksum);
             if (checksum == bsd_checksum(addr, size)) {
                 // Checksum matches
-                printf("checksum matches\n");
+                DEBUGF("checksum matches\n");
                 // Read name from rom header
                 uint8_t* romdata = addr + 32;
                 uint8_t* name = &romdata[0x134];
@@ -620,6 +524,6 @@ void find_rom_entries() {
             }
         }
     }
-    printf("find_rom_entries: %d\n", romIndex);
+    DEBUGF("find_rom_entries: %d\n", romIndex);
     my_roms.count = romIndex;
 }
