@@ -40,9 +40,7 @@ uint8_t* banks[MAX_BANKS_COUNT]; // 524288 bytes of rom data across 128 banks
 // FIXME Support larger ram (32 KiB) ?
 uint8_t ram[8192];
 
-uint8_t romtype;
-uint32_t romsize;
-uint32_t ramsize;
+cart_t cart;
 
 roms_t my_roms;
 
@@ -51,12 +49,12 @@ uint8_t* selected_rom_addr;
 
 
 uint8_t* ram_persistent_flash_addr() {
-    return selected_rom_addr + 0x100000 - ramsize;
+    return selected_rom_addr + 0x100000 - cart.ramsize;
 }
 
 void persist_ram_to_flash() {
-    if (selected_rom_addr != 0 && ramsize > 0) {
-        uint32_t len = ramsize;
+    if (selected_rom_addr != 0 && cart.ramsize > 0) {
+        uint32_t len = cart.ramsize;
         uint8_t* dest = ram_persistent_flash_addr();
 
         printf("Persisting %d bytes of ram (0x%08x) to flash (0x%08x)\n", len, ram, dest);
@@ -201,7 +199,7 @@ void load_banks_4k(const uint8_t* romdata, uint32_t size) {
 }
 #endif
 
-uint8_t init_rom(const uint8_t* romdata, uint32_t size) {
+cart_t init_rom(const uint8_t* romdata, uint32_t size) {
     // Pin cache lines if required
 #if defined(LOAD_BANKS_16K) || defined(LOAD_BANKS_4K)
     pin_cache_lines();
@@ -224,59 +222,72 @@ uint8_t init_rom(const uint8_t* romdata, uint32_t size) {
     printf("Loaded ROM at 0x%p\n", romdata);
 #endif
 
-    // Read ROM header
-    uint8_t cart_type = romdata[0x147];
-    uint8_t rom_size = romdata[0x148];
-    uint8_t ram_size = romdata[0x149];
+    memset(&cart, 0, sizeof(cart));
 
-    if (cart_type == 0 && rom_size == 0) {  // 32KiB bankless
-        romtype = cart_type;
-    } else if (cart_type >= 1 && cart_type <= 3) {  // MBC1
-        romtype = cart_type;
-    } else {
-        romtype = 0xff; // Unsupported
-    }
+    // Read ROM header
+    cart.type = romdata[0x147];
+    cart.rom = romdata[0x148];
+    cart.ram = romdata[0x149];
 
     // TODO Read ROM size from header ?!
-    romsize = size;
+    cart.romsize = size;
 
-    ramsize = 0;
-    if (cart_type == 2 || cart_type == 3) {
-        if (ram_size < 2) {
-            ramsize = 0;
-        } else if (ram_size == 2) {
-            ramsize = 8 * 1024;
-        } else if (ram_size == 3) {
-            ramsize = 32 * 1024;
-        } else if (ram_size == 4) {
-            ramsize = 128 * 1024;
-        } else if (ram_size == 5) {
-            ramsize = 64 * 1024;
+    if (cart.type == 0x02 || cart.type == 0x03 || cart.type == 0x1a || cart.type == 0x1b || cart.type == 0x1d || cart.type == 0x1e) {
+        cart.has_ram = true;
+        if (cart.ram < 2) {
+            cart.ramsize = 0;
+        } else if (cart.ram == 2) {
+            cart.ramsize = 8 * 1024;
+        } else if (cart.ram == 3) {
+            cart.ramsize = 32 * 1024;
+        } else if (cart.ram == 4) {
+            cart.ramsize = 128 * 1024;
+        } else if (cart.ram == 5) {
+            cart.ramsize = 64 * 1024;
         }
+    }
+
+    if (cart.type == 0x03 || cart.type == 0x1b || cart.type == 0x1e) {
+        cart.has_battery = true;
+    }
+
+    if (cart.type == 0x1c || cart.type == 0x1d || cart.type == 0x1e) {
+        cart.has_rumble = true;
     }
     
+    if (cart.type == 0) { // 32KiB bankless
+        cart.loop = &loop_32kb;
 #ifdef ENABLE_UART
-    if (romtype == 0) { // 32KiB bankless
         printf("ROM type: 32KiB bankless\n");
-    } else if (romtype >= 1 && romtype <= 3) { // MBC1
-        printf("ROM type: MBC1\n");
-    } else {
-        printf("ROM type: Unsupported\n");
-    }
 #endif
+    } else if (cart.type >= 0x01 && cart.type <= 0x03) { // MBC1
+        cart.loop = &loop_mbc1;
+#ifdef ENABLE_UART
+        printf("ROM type: MBC1\n");
+#endif
+    } else if (cart.type >= 0x19 && cart.type <= 0x1e) { // MBC5
+        cart.loop = &loop_mbc5;
+#ifdef ENABLE_UART
+        printf("ROM type: MBC5\n");
+#endif
+    } else {
+#ifdef ENABLE_UART
+        printf("ROM type: Unsupported\n");
+#endif
+    }
 
     // Load ram from flash
-    if (selected_rom_addr != 0 && ramsize > 0) {
+    if (selected_rom_addr != 0 && cart.ramsize > 0) {
         uint8_t* src = ram_persistent_flash_addr();
         printf("Loading RAM from 0x%08x\n", src);
-        if (ramsize > sizeof(ram)) {
-            printf("Unsupported ram size: %d bytes (max. supported: %d bytes)\n", ramsize, sizeof(ram));
+        if (cart.ramsize > sizeof(ram)) {
+            printf("Unsupported ram size: %d bytes (max. supported: %d bytes)\n", cart.ramsize, sizeof(ram));
         } else {
-            memcpy(ram, src, ramsize);
+            memcpy(ram, src, cart.ramsize);
         }
     }
 
-    return romtype;
+    return cart;
 }
 
 void __not_in_flash_func(loop_launcher)() {
@@ -294,7 +305,7 @@ void __not_in_flash_func(loop_launcher)() {
         }
         uint32_t address = (gpio_get_all64() & GB_ADDR_PINS_MASK);
         uint8_t data = 0xff;
-        if ((address & 0x8000) == 0 && address < romsize) {
+        if ((address & 0x8000) == 0 && address < cart.romsize) {
             uint32_t data_location_in_rom = address;
 #ifdef NO_LOAD
             data = launcher_rom[data_location_in_rom];
@@ -352,7 +363,7 @@ void __not_in_flash_func(loop_32kb)() {
         }
         uint32_t address = (gpio_get_all64() & GB_ADDR_PINS_MASK);
         uint8_t data = 0xff;
-        if ((address & 0x8000) == 0 && address < romsize) {
+        if ((address & 0x8000) == 0 && address < cart.romsize) {
             uint32_t data_location_in_rom = address;
 #ifdef NO_LOAD
             data = rom[data_location_in_rom];
@@ -419,7 +430,7 @@ void __not_in_flash_func(loop_mbc1)() {
             // Write to ram
             else if (ram_enabled && address >= 0xa000 && address <= 0xbfff) {
                 uint32_t data_location_in_ram = rambank * 8192 + (address & 0x1fff);
-                if (data_location_in_ram < ramsize) {
+                if (data_location_in_ram < cart.ramsize) {
                     ram[data_location_in_ram] = data;
                 }
             }
@@ -427,7 +438,7 @@ void __not_in_flash_func(loop_mbc1)() {
         }
         uint8_t data = 0xff;
         // Read from rom
-        if ((address & 0x8000) == 0 && address < romsize) {
+        if ((address & 0x8000) == 0 && address < cart.romsize) {
             uint32_t data_location_in_rom;
             if ((address & 0xc000) == 0) {
                 // 0x0000-0x3fff: Bank 0
@@ -456,7 +467,105 @@ void __not_in_flash_func(loop_mbc1)() {
         // Read from ram
         else if (ram_enabled && address >= 0xa000 && address <= 0xbfff) {
             uint32_t data_location_in_ram = rambank * 8192 + (address & 0x1fff);
-            if (data_location_in_ram < ramsize) {
+            if (data_location_in_ram < cart.ramsize) {
+                data = ram[data_location_in_ram];
+            }
+        }
+        uint64_t data_out = data << GB_DATA_PINS_SHIFT;
+        gpio_set_dir_out_masked64(GB_DATA_PINS_MASK);
+        gpio_put_masked64(GB_DATA_PINS_MASK, data_out);
+        // FIXME when to set back to input ??
+        //gpio_set_dir_in_masked64(GB_DATA_PINS_MASK);
+        //gpio_clr_mask64(GB_DATA_PINS_MASK);
+    }
+}
+
+void __not_in_flash_func(loop_mbc5)() {
+    uint16_t rombank = 0;
+    uint8_t rambank = 0;
+    bool ram_enabled = false;
+
+#ifdef ENABLE_UART
+    printf("Waiting for GB to boot...\n");
+#endif
+
+    while((gpio_get_all64() & GB_RD_PIN_MASK) == 0) {
+        tight_loop_contents();
+    }
+
+    while (true) {
+        while((gpio_get_all64() & GB_CTRL_PINS_MASK) == GB_CTRL_PINS_MASK) {
+             tight_loop_contents();
+        }
+        bool writing = (gpio_get_all64() & GB_WR_PIN_MASK) == 0;
+        uint32_t address = (gpio_get_all64() & GB_ADDR_PINS_MASK);
+        if (writing) {
+            // READ from data pins
+            gpio_set_dir_in_masked64(GB_DATA_PINS_MASK);
+            gpio_clr_mask64(GB_DATA_PINS_MASK);
+            uint8_t data = (gpio_get_all64() & GB_DATA_PINS_MASK) >> GB_DATA_PINS_SHIFT;
+            // Registers: 0x0000-0x1fff to set enable/disable ram
+            if (address <= 0x1fff) {
+                ram_enabled = (data & 0xf) == 0xa;
+            }
+            // Registers: 0x2000-0x2fff to set low 8 bits of rom bank
+            else if (address <= 0x2fff) {
+                rombank = (rombank & 0x100) | data;
+            }
+            // Registers: 0x3000-0x3fff to set 9th bit of rom bank
+            else if (address <= 0x3fff) {
+                rombank = ((data & 0x01) << 8) | (rombank & 0xff);
+            }
+            // Registers: 0x4000-0x5fff to set ram bank
+            else if (address <= 0x5fff) {
+                // If cartridge has a rumble motor, bit 3 of ram bank is used to control it and should _not_ affect selected ram bank
+                if (cart.has_rumble) {
+                    rambank = data & 0x07;
+                } else {
+                    rambank = data & 0x0f;
+                }
+            }
+            // Write to ram
+            else if (ram_enabled && address >= 0xa000 && address <= 0xbfff) {
+                uint32_t data_location_in_ram = rambank * 8192 + (address & 0x1fff);
+                if (data_location_in_ram < cart.ramsize) {
+                    ram[data_location_in_ram] = data;
+                }
+            }
+            continue;
+        }
+        uint8_t data = 0xff;
+        // Read from rom
+        if ((address & 0x8000) == 0 && address < cart.romsize) {
+            uint32_t data_location_in_rom;
+            if ((address & 0xc000) == 0) {
+                // 0x0000-0x3fff: Bank 0
+                data_location_in_rom = address;
+            } else {
+                // 0x4000-0x7fff: Current bank
+                data_location_in_rom = rombank * 16384 + (address & 0x3fff);
+            }
+#ifdef NO_LOAD
+            data = rom[data_location_in_rom];
+#endif
+#ifdef LOAD_NO_BANKS
+            data = sram_rom[data_location_in_rom];
+#endif
+#ifdef LOAD_BANKS_16K
+            int bank = (data_location_in_rom >> 14) & 0x1f;
+            int addr = data_location_in_rom & 0x3fff;
+            data = banks[bank][addr];
+#endif
+#ifdef LOAD_BANKS_4K
+            int bank = (data_location_in_rom >> 12) & 0x7f;
+            int addr = data_location_in_rom & 0x0fff;
+            data = banks[bank][addr];
+#endif
+        }
+        // Read from ram
+        else if (ram_enabled && address >= 0xa000 && address <= 0xbfff) {
+            uint32_t data_location_in_ram = rambank * 8192 + (address & 0x1fff);
+            if (data_location_in_ram < cart.ramsize) {
                 data = ram[data_location_in_ram];
             }
         }

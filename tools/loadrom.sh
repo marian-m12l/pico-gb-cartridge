@@ -33,6 +33,26 @@ if [ "$#" -eq 0 ]; then
     exit 0
 fi
 
+
+# Clear slot
+if [ "$#" -eq 1 ]; then
+    index=$1    # Between 1 and 14
+
+    # Destination address
+    addr=$(printf "0x%X" $((index * 0x100000 + 0x10000000)))
+
+    echo "erasing rom at address $addr"
+
+    $OPENOCD -f interface/jlink.cfg -c "transport select swd" -c "adapter speed 6000" -f target/rp2350.cfg -c "init; halt; flash erase_address $addr 0x20000; resume; exit"
+
+    exit 0
+fi
+
+
+# Program slot
+rom=$1
+index=$2    # Between 1 and 14
+
 # Magic bytes
 echo -en 'pico-gb-rom     ' > /tmp/rom.bin
 

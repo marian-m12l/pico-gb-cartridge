@@ -94,16 +94,12 @@ int main() {
         gpio_set_dir(GB_RESET_PIN, true);
 
         uint32_t size = *((uint32_t*) (selected + 16));
-        uint8_t romtype = init_rom(selected + 32, size);
+        cart_t cart = init_rom(selected + 32, size);
         
         // Release reset on console
         gpio_set_dir(GB_RESET_PIN, false);
-
-        if (romtype == 0) { // 32KiB bankless ROM
-            loop_32kb();
-        } else if (romtype >= 1 && romtype <= 3) {  // MBC1
-            loop_mbc1();
-        }
+        
+        cart.loop();
     }
 #endif
 
