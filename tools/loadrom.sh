@@ -1,8 +1,6 @@
 #!/bin/bash
 
 OPENOCD=openocd
-rom=$1
-index=$2    # Between 1 and 14
 
 # List slots
 if [ "$#" -eq 0 ]; then
