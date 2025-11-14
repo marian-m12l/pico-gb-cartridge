@@ -14,17 +14,13 @@
 #define CACHE_AS_SRAM_OFFSET 0x02000000
 
 #ifdef NO_LOAD
-#define SET_DATA(data_location_in_rom) { \
-    data = rom[data_location_in_rom]; \
-}
+#define SET_DATA(data_location_in_rom) data = rom[data_location_in_rom]
 #endif
 
 #ifdef LOAD_NO_BANKS
 #define ROM_MAX_LENGTH (256*1024)
 uint8_t sram_rom[ROM_MAX_LENGTH];
-#define SET_DATA(data_location_in_rom) { \
-    data = sram_rom[data_location_in_rom]; \
-}
+#define SET_DATA(data_location_in_rom) data = sram_rom[data_location_in_rom]
 #endif
 
 #ifdef LOAD_BANKS_16K
@@ -34,11 +30,7 @@ uint8_t sram_rom[ROM_MAX_LENGTH];
 uint8_t* xip_bank31 = (uint8_t*) (XIP_BASE+CACHE_AS_SRAM_OFFSET);
 uint8_t sram_banks[31][BANK_LENGTH];
 uint8_t* banks[MAX_BANKS_COUNT]; // 524288 bytes of rom data across 32 banks
-#define SET_DATA(data_location_in_rom) { \
-    int bank = (data_location_in_rom >> 14) & 0x1f; \
-    int addr = data_location_in_rom & 0x3fff; \
-    data = banks[bank][addr]; \
-}
+#define SET_DATA(data_location_in_rom) int bank = (data_location_in_rom >> 14) & 0x1f; int addr = data_location_in_rom & 0x3fff; data = banks[bank][addr]
 #endif
 
 #ifdef LOAD_BANKS_4K
@@ -49,11 +41,7 @@ uint8_t* xip_banks = (uint8_t*) (XIP_BASE+CACHE_AS_SRAM_OFFSET);
 uint8_t* usb_bank = (uint8_t*) (USBCTRL_DPRAM_BASE);
 uint8_t sram_banks[123][BANK_LENGTH];
 uint8_t* banks[MAX_BANKS_COUNT]; // 524288 bytes of rom data across 128 banks
-#define SET_DATA(data_location_in_rom) { \
-    int bank = (data_location_in_rom >> 12) & 0x7f; \
-    int addr = data_location_in_rom & 0x0fff; \
-    data = banks[bank][addr]; \
-}
+#define SET_DATA(data_location_in_rom) int bank = (data_location_in_rom >> 12) & 0x7f; int addr = data_location_in_rom & 0x0fff; data = banks[bank][addr]
 #endif
 
 // FIXME Support larger ram (32 KiB) ?
@@ -263,7 +251,7 @@ cart_t init_rom(const uint8_t* romdata, uint32_t size) {
 }
 
 void __not_in_flash_func(loop_launcher)() {
-    DEBUGF("Waiting for GB to boot...\n");
+    DEBUGF("loop_launcher: Waiting for GB to boot...\n");
 
     while((gpio_get_all64() & GB_RD_PIN_MASK) == 0) {
         tight_loop_contents();
@@ -304,7 +292,7 @@ void __not_in_flash_func(loop_launcher)() {
 }
 
 void __not_in_flash_func(loop_32kb)() {
-    DEBUGF("Waiting for GB to boot...\n");
+    DEBUGF("loop_32kb: Waiting for GB to boot...\n");
 
     while((gpio_get_all64() & GB_RD_PIN_MASK) == 0) {
         tight_loop_contents();
@@ -334,7 +322,7 @@ void __not_in_flash_func(loop_mbc1)() {
     uint8_t rambank = 0;
     bool ram_enabled = false;
 
-    DEBUGF("Waiting for GB to boot...\n");
+    DEBUGF("loop_mbc1: Waiting for GB to boot...\n");
 
     while((gpio_get_all64() & GB_RD_PIN_MASK) == 0) {
         tight_loop_contents();
@@ -365,7 +353,7 @@ void __not_in_flash_func(loop_mbc1)() {
             }
             // Write to ram
             else if (ram_enabled && address >= 0xa000 && address <= 0xbfff) {
-                uint32_t data_location_in_ram = rambank * 8192 + (address & 0x1fff);
+                uint32_t data_location_in_ram = (rambank << 13) + (address & 0x1fff);
                 if (data_location_in_ram < cart.ramsize) {
                     ram[data_location_in_ram] = data;
                 }
@@ -381,13 +369,13 @@ void __not_in_flash_func(loop_mbc1)() {
                 data_location_in_rom = address;
             } else {
                 // 0x4000-0x7fff: Current bank
-                data_location_in_rom = rombank * 16384 + (address & 0x3fff);
+                data_location_in_rom = (rombank << 14) + (address & 0x3fff);
             }
             SET_DATA(data_location_in_rom);
         }
         // Read from ram
         else if (ram_enabled && address >= 0xa000 && address <= 0xbfff) {
-            uint32_t data_location_in_ram = rambank * 8192 + (address & 0x1fff);
+            uint32_t data_location_in_ram = (rambank << 13) + (address & 0x1fff);
             if (data_location_in_ram < cart.ramsize) {
                 data = ram[data_location_in_ram];
             }
@@ -402,11 +390,11 @@ void __not_in_flash_func(loop_mbc1)() {
 }
 
 void __not_in_flash_func(loop_mbc5)() {
-    uint16_t rombank = 0;
+    uint16_t rombank = 1;
     uint8_t rambank = 0;
     bool ram_enabled = false;
 
-    DEBUGF("Waiting for GB to boot...\n");
+    DEBUGF("loop_mbc5: Waiting for GB to boot...\n");
 
     while((gpio_get_all64() & GB_RD_PIN_MASK) == 0) {
         tight_loop_contents();
@@ -446,7 +434,7 @@ void __not_in_flash_func(loop_mbc5)() {
             }
             // Write to ram
             else if (ram_enabled && address >= 0xa000 && address <= 0xbfff) {
-                uint32_t data_location_in_ram = rambank * 8192 + (address & 0x1fff);
+                uint32_t data_location_in_ram = (rambank << 13) + (address & 0x1fff);
                 if (data_location_in_ram < cart.ramsize) {
                     ram[data_location_in_ram] = data;
                 }
@@ -462,13 +450,13 @@ void __not_in_flash_func(loop_mbc5)() {
                 data_location_in_rom = address;
             } else {
                 // 0x4000-0x7fff: Current bank
-                data_location_in_rom = rombank * 16384 + (address & 0x3fff);
+                data_location_in_rom = (rombank << 14) + (address & 0x3fff);
             }
             SET_DATA(data_location_in_rom);
         }
         // Read from ram
         else if (ram_enabled && address >= 0xa000 && address <= 0xbfff) {
-            uint32_t data_location_in_ram = rambank * 8192 + (address & 0x1fff);
+            uint32_t data_location_in_ram = (rambank << 13) + (address & 0x1fff);
             if (data_location_in_ram < cart.ramsize) {
                 data = ram[data_location_in_ram];
             }

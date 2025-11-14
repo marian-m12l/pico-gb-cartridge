@@ -8,6 +8,7 @@
 #include "pins.h"
 #include "launcher.h"
 
+#define OVERCLOCK_FREQ_MHZ 360
 #define MAGIC_RESET_TO_ROM 0x11111111
 
 void button_gpio_callback(uint gpio, uint32_t events) {
@@ -38,13 +39,19 @@ void button_gpio_callback(uint gpio, uint32_t events) {
 
 
 int main() {
-    // Overclock to 330MHz
-    vreg_set_voltage(VREG_VOLTAGE_1_20);
-    set_sys_clock_khz(330000, true);
+    // Overclock to 360MHz
+    vreg_set_voltage(VREG_VOLTAGE_1_30);
+    bool overclocked = set_sys_clock_khz(OVERCLOCK_FREQ_MHZ*1000, true);
 
 #ifdef ENABLE_UART
     stdio_init_all();
 #endif
+
+    if (overclocked) {
+        DEBUGF("Overclocked at %dMHz\n", OVERCLOCK_FREQ_MHZ);
+    } else {
+        DEBUGF("Failed to overclocked\n");
+    }
 
 #ifdef ENABLE_BUS
     // Configure GPIOs
